@@ -22,18 +22,34 @@ int pedal_atual = 0;
 int rpm_anterior = -1;
 int pedal_anterior = -1;
 
+#define BOTAO_TELA 19
+
+int telaAtual = 0;
+
+int temperaturaMotor = 85; // valor inicial
+
+bool ultimoEstadoBotao = HIGH;
+
 void desenharFundoEstatico();
 void atualizarPainel(int rpm, int pedal);
 void desenharPonteiro(int valor, uint16_t cor);
 void lerRedeCAN();
+void mostrarSplashScreen();
+void desenharLogo();
+void verificarBotao();
+void desenharTelaTemperatura();
+void atualizarTelaTemperatura();
 
 void setup() {
   Serial.begin(115200);
-  
-  // Inicializa o Ecrã
-  tft.begin();
-  tft.fillScreen(GC9A01A_BLACK);
-  desenharFundoEstatico();
+  pinMode(BOTAO_TELA, INPUT_PULLUP);
+// Inicializa o Ecrã
+tft.begin();
+
+mostrarSplashScreen();
+
+tft.fillScreen(GC9A01A_BLACK);
+desenharFundoEstatico();
 
   // ==========================================
   // INICIALIZAÇÃO DO CAN NATIVO DO ESP32 (TWAI)
@@ -57,7 +73,9 @@ void setup() {
 }
 
 void loop() {
-  // Ouve a rede continuamente sem bloquear o painel
+
+  verificarBotao();
+
   lerRedeCAN();
 }
 
@@ -73,21 +91,41 @@ void lerRedeCAN() {
     // Processa os IDs exatamente como antes
     
     // EXAMPLO 1: Capturando RPM (Substitui o ID 0x1A2 pelo do teu carro)
-    if (message.identifier == 0x1A2) { 
+    if (message.identifier == 0xFC) { 
       // Exemplo: Junta 2 bytes (Byte 2 e 3 da mensagem)
-      rpm_atual = (message.data[2] << 8) | message.data[3]; 
+      rpm_atual = ((message.data[0] << 8) | message.data[1])/4; 
     }
     
     // EXEMPLO 2: Capturando Pedal (Substitui o ID 0x2B4)
-    if (message.identifier == 0x2B4) { 
-      pedal_atual = map(message.data[4], 0, 255, 0, 100); 
+    if (message.identifier == 0x1F0) { 
+      pedal_atual = map(((message.data[0] << 8) | message.data[1]), 0, 8000, 0, 100); 
     }
 
     // Só redesenha se os valores mudaram (mantém o ponteiro suave)
     if (rpm_atual != rpm_anterior || pedal_atual != pedal_anterior) {
       atualizarPainel(rpm_atual, pedal_atual);
     }
+
+    if (message.identifier == 0x123) {
+      temperaturaMotor = message.data[0] - 40;
+    }
+
   }
+
+if (telaAtual == 0) {
+
+  if (rpm_atual != rpm_anterior ||
+      pedal_atual != pedal_anterior) {
+
+    atualizarPainel(rpm_atual, pedal_atual);
+  }
+}
+
+if (telaAtual == 1) {
+
+  atualizarTelaTemperatura();
+}
+
 }
 
 // ==========================================
@@ -95,37 +133,83 @@ void lerRedeCAN() {
 // ==========================================
 
 void desenharFundoEstatico() {
-  for(int i = 0; i < 360; i += 10) {
-    float rad = i * PI / 180.0;
-    tft.drawPixel(120 + 115 * cos(rad), 120 + 115 * sin(rad), GC9A01A_DARKGREY);
-  }
 
-  for (int i = 0; i <= 8000; i += 500) {
-    float angulo_graus = map(i, 0, 8000, 135, 405);
-    float angulo_rad = angulo_graus * PI / 180.0; 
-    
-    int x_ext = 120 + 110 * cos(angulo_rad); 
-    int y_ext = 120 + 110 * sin(angulo_rad);
-    int x_int = 120 + 95 * cos(angulo_rad); 
-    int y_int = 120 + 95 * sin(angulo_rad);
-    
-    uint16_t cor_marca = (i >= 6000) ? GC9A01A_RED : GC9A01A_WHITE;
-    
-    if (i % 1000 == 0) {
-      tft.drawLine(x_int, y_int, x_ext, y_ext, cor_marca);
-      tft.drawLine(x_int+1, y_int, x_ext+1, y_ext, cor_marca); 
-    } else {
-      tft.drawPixel(x_ext, y_ext, cor_marca);
+  tft.fillScreen(GC9A01A_BLACK);
+
+  // Arco colorido do RPM
+  for (int rpm = 0; rpm <= 8000; rpm += 20) {
+
+    float angulo = map(rpm, 0, 8000, 135, 405);
+    float rad = angulo * PI / 180.0;
+
+    uint16_t cor;
+
+    if (rpm < 4000)
+      cor = GC9A01A_GREEN;
+
+    else if (rpm < 6000)
+      cor = GC9A01A_YELLOW;
+
+    else
+      cor = GC9A01A_RED;
+
+    for (int esp = 0; esp < 12; esp++) {
+
+      int x = 120 + (100 + esp) * cos(rad);
+      int y = 120 + (100 + esp) * sin(rad);
+
+      tft.drawPixel(x, y, cor);
     }
   }
-  
-  tft.setTextSize(1);
+
+  // Marcas da escala
+  for (int i = 0; i <= 8000; i += 500) {
+
+    float angulo = map(i, 0, 8000, 135, 405);
+    float rad = angulo * PI / 180.0;
+
+    int x1 = 120 + 90 * cos(rad);
+    int y1 = 120 + 90 * sin(rad);
+
+    int x2 = 120 + 115 * cos(rad);
+    int y2 = 120 + 115 * sin(rad);
+
+    uint16_t cor;
+
+    if (i < 4000)
+      cor = GC9A01A_GREEN;
+    else if (i < 6000)
+      cor = GC9A01A_YELLOW;
+    else
+      cor = GC9A01A_RED;
+
+    tft.drawLine(x1, y1, x2, y2, cor);
+
+    if (i % 1000 == 0) {
+
+      char txt[2];
+      sprintf(txt, "%d", i / 1000);
+
+      int xt = 120 + 75 * cos(rad);
+      int yt = 120 + 75 * sin(rad);
+
+      tft.setTextColor(GC9A01A_WHITE);
+      tft.setTextSize(2);
+      tft.setCursor(xt - 5, yt - 5);
+      tft.print(txt);
+    }
+  }
+
+  // Centro
+  tft.fillCircle(120,120,40,GC9A01A_BLACK);
+
   tft.setTextColor(GC9A01A_WHITE);
-  
-  tft.setCursor(111, 65); 
+  tft.setTextSize(2);
+
+  tft.setCursor(95,55);
   tft.print("RPM");
-  
-  tft.setCursor(99, 130); 
+
+  tft.setCursor(70,145);
   tft.print("PEDAL %");
 }
 
@@ -138,6 +222,18 @@ void atualizarPainel(int rpm, int pedal) {
     uint16_t corPonteiro = (rpm >= 6000) ? GC9A01A_RED : GC9A01A_WHITE;
     desenharPonteiro(rpm, corPonteiro);
 
+
+    uint16_t corRPM;
+
+if(rpm < 4000)
+    corRPM = GC9A01A_GREEN;
+else if(rpm < 6000)
+    corRPM = GC9A01A_YELLOW;
+else
+    corRPM = GC9A01A_RED;
+
+tft.setTextColor(corRPM, GC9A01A_BLACK);
+
     tft.setTextColor(GC9A01A_WHITE, GC9A01A_BLACK);
     tft.setTextSize(3);
     
@@ -147,6 +243,9 @@ void atualizarPainel(int rpm, int pedal) {
     tft.print(rpmStr);
     
     rpm_anterior = rpm;
+
+
+
   }
   
   if (pedal != pedal_anterior) {
@@ -163,21 +262,139 @@ void atualizarPainel(int rpm, int pedal) {
 }
 
 void desenharPonteiro(int valor, uint16_t cor) {
-  if (valor < 0) valor = 0;
-  if (valor > 8000) valor = 8000;
-  
-  float angulo_graus = map(valor, 0, 8000, 135, 405);
-  float angulo_rad = angulo_graus * PI / 180.0;
-  
-  int x_centro = 120 + 70 * cos(angulo_rad);
-  int y_centro = 120 + 70 * sin(angulo_rad);
-  
-  int x_ponta = 120 + 105 * cos(angulo_rad);
-  int y_ponta = 120 + 105 * sin(angulo_rad);
-  
-  tft.drawLine(x_centro, y_centro, x_ponta, y_ponta, cor);
-  
-  int x_ponta2 = 120 + 105 * cos(angulo_rad + 0.02);
-  int y_ponta2 = 120 + 105 * sin(angulo_rad + 0.02);
-  tft.drawLine(x_centro, y_centro, x_ponta2, y_ponta2, cor);
+
+  valor = constrain(valor, 0, 8000);
+
+  float angulo = map(valor, 0, 8000, 135, 405);
+  float rad = angulo * PI / 180.0;
+
+  int x1 = 120;
+  int y1 = 120;
+
+  int x2 = 120 + 105 * cos(rad);
+  int y2 = 120 + 105 * sin(rad);
+
+  tft.drawLine(x1, y1, x2, y2, cor);
+  tft.drawLine(x1+1, y1, x2+1, y2, cor);
+  tft.drawLine(x1-1, y1, x2-1, y2, cor);
+
+  tft.fillCircle(120,120,6,cor);
+}
+
+// ==========================================
+// SPLASH SCREEN
+// ==========================================
+
+void desenharLogo() {
+
+  uint16_t verde = GC9A01A_GREEN;
+  uint16_t vermelho = GC9A01A_RED;
+
+  int s = 18;
+  int gap = 4;
+
+  // posição da logo
+  int x0 = 82;
+  int y0 = 45;
+
+  // círculo vermelho
+  tft.fillCircle(
+    x0 + s/2,
+    y0 + s/2,
+    s/2,
+    vermelho
+  );
+
+  // linha superior
+  tft.fillRoundRect(x0 + (s+gap), y0, s, s, 3, verde);
+  tft.fillRoundRect(x0 + 2*(s+gap), y0, s, s, 3, verde);
+
+  // linha 2
+  tft.fillRoundRect(x0, y0 + (s+gap), s, s, 3, verde);
+  tft.fillRoundRect(x0 + (s+gap), y0 + (s+gap), s, s, 3, verde);
+
+  // linha 3
+  tft.fillRoundRect(x0, y0 + 2*(s+gap), s, s, 3, verde);
+  tft.fillRoundRect(x0 + (s+gap), y0 + 2*(s+gap), s, s, 3, verde);
+  tft.fillRoundRect(x0 + 2*(s+gap), y0 + 2*(s+gap), s, s, 3, verde);
+
+  // linha 4
+  tft.fillRoundRect(x0, y0 + 3*(s+gap), s, s, 3, verde);
+  tft.fillRoundRect(x0 + (s+gap), y0 + 3*(s+gap), s, s, 3, verde);
+}
+
+void mostrarSplashScreen() {
+
+  tft.fillScreen(GC9A01A_BLACK);
+
+  desenharLogo();
+
+  delay(3000);
+
+  tft.fillScreen(GC9A01A_BLACK);
+}
+
+void verificarBotao() {
+
+  bool estadoAtual = digitalRead(BOTAO_TELA);
+
+  // Detecta apenas o clique
+  if (ultimoEstadoBotao == HIGH && estadoAtual == LOW) {
+
+    telaAtual++;
+
+    if (telaAtual > 1)
+      telaAtual = 0;
+
+    tft.fillScreen(GC9A01A_BLACK);
+
+    if (telaAtual == 0) {
+      desenharFundoEstatico();
+      rpm_anterior = -1;
+      pedal_anterior = -1;
+    }
+
+    if (telaAtual == 1) {
+      desenharTelaTemperatura();
+    }
+
+  }
+
+  ultimoEstadoBotao = estadoAtual;
+}
+
+void desenharTelaTemperatura() {
+
+  tft.fillScreen(GC9A01A_BLACK);
+
+  tft.setTextColor(GC9A01A_WHITE);
+  tft.setTextSize(2);
+
+  tft.setCursor(30,40);
+  tft.print("TEMPERATURA");
+
+  tft.drawCircle(120,130,70,GC9A01A_WHITE);
+}
+
+void atualizarTelaTemperatura() {
+
+  tft.fillRect(50,100,140,60,GC9A01A_BLACK);
+
+  uint16_t cor;
+
+  if(temperaturaMotor < 95)
+    cor = GC9A01A_GREEN;
+  else if(temperaturaMotor < 105)
+    cor = GC9A01A_YELLOW;
+  else
+    cor = GC9A01A_RED;
+
+  tft.setTextColor(cor);
+  tft.setTextSize(5);
+
+  tft.setCursor(70,105);
+  tft.print(temperaturaMotor);
+
+  tft.setTextSize(2);
+  tft.print("C");
 }
